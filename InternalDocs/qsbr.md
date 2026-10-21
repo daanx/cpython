@@ -145,6 +145,10 @@ thread state abandons its pages without invalidating live objects; heap
 visitation includes both owned and abandoned pages, so they remain visible to
 the garbage collector.
 
+Full pages can also be abandoned before their allocating thread exits. The
+ordinary last-free path reclaims an empty, QSBR-delayed page into the freeing
+thread's theap for the same heap, where its delayed-page queue tracks release.
+
 CPython supplies four typed hooks: `mi_heap_qsbr_init` associates a heap with its
 interpreter's QSBR state, `mi_page_qsbr_clear` and `mi_page_qsbr_is_clear` manage
 a page's goal, and `mi_page_qsbr_should_delay` establishes a goal if needed and

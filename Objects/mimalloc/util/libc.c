@@ -17,6 +17,7 @@ terms of the MIT license. A copy of the license can be found in the file
 #include "mimalloc/prim/prim-tls.h"
 #include "mimalloc/util/options.h"
 #include "mimalloc/util/libc.h"
+#include <limits.h>                   // LONG_MIN, LONG_MAX
 
 #if MI_DEBUG && NDEBUG
 #if defined(_MSC_VER)
@@ -114,6 +115,63 @@ const char* _mi_strrchr(const char* s, char c) {
     if (*s == c) last = s;
   }
   return last;
+}
+
+
+static bool mi_isspace(char c) {
+  return (c == ' ' || (c >= '\t' && c <= '\r'));
+}
+
+static int mi_digit_value(char c, int base) {
+  if (c >= '0' && c <= '9') return (c - '0');
+  if (base == 16) {
+    if (c >= 'a' && c <= 'f') return (c - 'a' + 10);
+    if (c >= 'A' && c <= 'F') return (c - 'A' + 10);
+  }
+  return -1;
+}
+
+// Parse up to max_len bytes without errno or requiring a terminator; skip at most 128 whitespace characters.
+// Allow at most 64 digits; leading zeros are allowed only in hexadecimal.
+// On failure, result is zero (clamped on overflow); end is s if no digits, otherwise the stopping point.
+bool _mi_strntol(const char* s, size_t max_len, const char** end, long* result) {
+  if (end != NULL) { *end = s; }
+  if (result != NULL) { *result = 0; }
+  if (s == NULL) return false;
+  size_t i = 0;
+  while (i < max_len && i < 128 && mi_isspace(s[i])) { i++; }
+  if (i == max_len) return false;
+  const bool neg = (s[i] == '-');
+  if (neg || s[i] == '+') { i++; }
+  if (i == max_len) return false;
+  int base = 10;
+  if (i + 1 < max_len && s[i] == '0' && (s[i+1] == 'x' || s[i+1] == 'X')) {
+    base = 16;
+    i += 2;
+  }
+  if (base == 10 && i + 1 < max_len && s[i] == '0' && mi_digit_value(s[i+1], base) >= 0) return false;
+  const size_t start = i;
+  // Accumulate negatively so LONG_MIN is representable without unsigned arithmetic.
+  const long limit = (neg ? LONG_MIN : -LONG_MAX);
+  const long cutoff = limit / base;
+  const long cutlim = -(limit % base);
+  long acc = 0;
+  while (i < max_len && i - start < 64) {
+    const int digit = mi_digit_value(s[i], base);
+    if (digit < 0) break;
+    if (acc < cutoff || (acc == cutoff && digit > cutlim)) {
+      if (end != NULL) { *end = s + i; }
+      if (result != NULL) { *result = (neg ? LONG_MIN : LONG_MAX); }
+      return false;
+    }
+    acc = acc*base - digit;
+    i++;
+  }
+  if (i == start) return false;
+  if (end != NULL) { *end = s + i; }
+  if (i < max_len && i - start == 64 && mi_digit_value(s[i], base) >= 0) return false;
+  if (result != NULL) { *result = (neg ? acc : -acc); }
+  return true;
 }
 
 #ifdef MI_NO_GETENV
@@ -292,7 +350,7 @@ static void mi_out_num(uintmax_t x, size_t base, char prefix, char** out, char* 
   }
   else {
     #define MI_MAX_OUT_DIGITS (160)     /* a 512 bit number has 155 digits */
-    char num[MI_MAX_OUT_DIGITS];  
+    char num[MI_MAX_OUT_DIGITS];
     int dcount = 0;
     while(x>0 && dcount < MI_MAX_OUT_DIGITS) {
       char digit = (char)(x % base);
@@ -358,8 +416,8 @@ int _mi_vsnprintf(char* buf, size_t bufsize, const char* fmt, va_list args) {
         }
         if (c == 0) break;  // extra check due to while
       }
-      if (c == 'z' || c == 't' || c == 'L') { 
-        numtype = c; MI_NEXTC(); 
+      if (c == 'z' || c == 't' || c == 'L') {
+        numtype = c; MI_NEXTC();
       }
       else if (c == 'l') {
         numtype = c; MI_NEXTC();
@@ -367,7 +425,7 @@ int _mi_vsnprintf(char* buf, size_t bufsize, const char* fmt, va_list args) {
         else if (c == '8') { numtype = '8'; MI_NEXTC(); } // 64-bit
         else if (c == '4') { numtype = '4'; MI_NEXTC(); } // 32-bit
       }
-      
+
 
       char* start = out;
       if (c == '%') {
@@ -387,7 +445,7 @@ int _mi_vsnprintf(char* buf, size_t bufsize, const char* fmt, va_list args) {
           else if (numtype == 'L')  x = va_arg(args, unsigned long long);
           else if (numtype == 'l')  x = va_arg(args, unsigned long);
           else if (numtype == '8')  x = va_arg(args, uint64_t);
-          else if (numtype == '4')  x = va_arg(args, uint32_t);        
+          else if (numtype == '4')  x = va_arg(args, uint32_t);
                                else x = va_arg(args, unsigned int);
         }
         else if (c == 'p') {
@@ -580,4 +638,3 @@ mi_decl_noinline size_t _mi_popcount_generic(size_t x) {
   return mi_popcount_generic64(x);
 }
 #endif
-
