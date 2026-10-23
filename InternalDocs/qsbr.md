@@ -180,6 +180,26 @@ The regular GIL build does not enable QSBR and retains full pages in their
 owning thread, as in mimalloc v2. Its allocation statistics visit only the
 current thread's pages, so early abandonment would make those counts incomplete.
 
+### Updating Vendored Mimalloc
+
+Run `./mimalloc-update` from the CPython checkout to fetch the current `dev3`
+branch of `microsoft/mimalloc`. Pass a branch or tag as the positional argument
+to select another revision. The script requires Git and rsync and can also be
+invoked by its full path from another directory.
+
+Use `./mimalloc-update --dry-run` to preview the update, or
+`./mimalloc-update --local ../mimalloc` to copy a local checkout, including
+uncommitted changes, without fetching or switching its branch. `--dry-run`
+also works with `--local`.
+
+The script mirrors upstream `src/` into `Objects/mimalloc/`, `include/` into
+`Include/internal/mimalloc/`, and `LICENSE` into `Objects/mimalloc/LICENSE`.
+This adds new files, removes obsolete files, and overwrites local edits within
+those two vendored directories. Unchanged files retain their timestamps.
+CPython's integration hooks, build files, and all other files remain untouched;
+the script does not build, stage, commit, or push changes. Review the diff and
+rebuild after an update; upstream API changes may still need integration work.
+
 
 ## Limitations
 
