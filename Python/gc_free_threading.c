@@ -311,8 +311,8 @@ gc_restore_tid(PyObject *op)
         op->ob_tid = 0;
     }
     else {
-        // Reclaimed pages may have a new owner; abandoned pages have none.
-        op->ob_tid = mi_page_is_abandoned(page) ? 0 : mi_page_thread_id(page);
+        // Full-page abandonment preserves the QSBR thread ownership.
+        op->ob_tid = mi_page_qsbr_thread_id(page);
         if (op->ob_tid == 0) {
             merge_refcount(op, 0);
         }

@@ -2,13 +2,14 @@ import unittest
 
 import threading
 from threading import Thread
+import textwrap
 import time
 from unittest import TestCase
 import gc
 import weakref
 
 from test import support
-from test.support import threading_helper
+from test.support import import_helper, script_helper, threading_helper
 
 
 class MyObj:
@@ -17,6 +18,120 @@ class MyObj:
 
 @threading_helper.requires_working_threading()
 class TestGC(TestCase):
+    @support.requires_subprocess()
+    def test_mimalloc_abandoned_page_owner(self):
+        for full_retain in (0, 2):
+            with self.subTest(page_full_retain=full_retain):
+                self.check_mimalloc_page_owner(
+                    reclaim=False, full_retain=full_retain)
+
+    @support.requires_subprocess()
+    def test_mimalloc_reclaimed_page_owner(self):
+        for full_retain in (0, 2):
+            with self.subTest(page_full_retain=full_retain):
+                self.check_mimalloc_page_owner(
+                    reclaim=True, full_retain=full_retain)
+
+    def check_mimalloc_page_owner(self, *, reclaim, full_retain):
+        import_helper.import_module('_testinternalcapi')
+        script = textwrap.dedent(f"""
+            from collections import Counter
+            from concurrent.futures import ThreadPoolExecutor
+            import faulthandler
+            import gc
+            import threading
+            import weakref
+
+            from _testinternalcapi import object_thread_id, py_thread_id
+
+            faulthandler.dump_traceback_later({support.SHORT_TIMEOUT}, exit=True)
+            gc.disable()
+
+            class Node:
+                __slots__ = ("value", "link", "__weakref__")
+
+                def __init__(self, value):
+                    self.value = value
+                    self.link = None
+
+            count = 20_000
+            state = {{}}
+            ready = threading.Event()
+            reclaimed = threading.Event()
+            finish = threading.Event()
+
+            def allocate():
+                state["owner"] = py_thread_id()
+                objects = [Node(i) for i in range(count)]
+                state["freed"] = {{id(objects[i])
+                                  for i in range(0, count, 2)}}
+                state["garbage"] = [weakref.ref(objects[i])
+                                    for i in range(0, count, 2)]
+                for i in range(0, count, 2):
+                    objects[i].link = objects[i]
+                    objects[i] = None
+                state["objects"] = objects
+                ready.set()
+                assert finish.wait({support.SHORT_TIMEOUT})
+                return sum(obj.value for obj in objects if obj is not None)
+
+            def reclaim_pages():
+                state["reclaimer"] = py_thread_id()
+                objects = [Node(i) for i in range(count)]
+                state["reused"] = sum(id(obj) in state["freed"]
+                                      for obj in objects)
+                state["new"] = objects
+                reclaimed.set()
+                assert finish.wait({support.SHORT_TIMEOUT})
+                return sum(obj.value for obj in state["objects"]
+                           if obj is not None)
+
+            expected_sum = sum(range(1, count, 2))
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                owner = pool.submit(allocate)
+                other = None
+                try:
+                    assert ready.wait({support.SHORT_TIMEOUT})
+                    objects = state["objects"]
+                    refs = [weakref.ref(obj) for obj in objects
+                            if obj is not None]
+                    assert {{object_thread_id(obj) for obj in objects
+                            if obj is not None}} == {{state["owner"]}}
+                    # Collect cycles on a different thread to avoid owner reclaim.
+                    gc.collect()
+                    assert all(ref() is None for ref in state["garbage"])
+                    expected_owners = {{state["owner"]}}
+                    if {reclaim!r}:
+                        other = pool.submit(reclaim_pages)
+                        assert reclaimed.wait({support.SHORT_TIMEOUT})
+                        assert state["reused"] > 0, "no freed slots were reused"
+                        expected_owners.add(state["reclaimer"])
+                    for _ in range(2):
+                        gc.collect()
+                        owners = Counter(object_thread_id(obj)
+                                         for obj in objects if obj is not None)
+                        assert owners.keys() <= expected_owners, owners
+                        if {reclaim!r}:
+                            assert owners[state["reclaimer"]] > 0, owners
+                        assert sum(obj.value for obj in objects
+                                   if obj is not None) == expected_sum
+                finally:
+                    finish.set()
+                assert owner.result() == expected_sum
+                if other is not None:
+                    assert other.result() == expected_sum
+            del objects
+            state.clear()
+            gc.collect()
+            assert all(ref() is None for ref in refs)
+            faulthandler.cancel_dump_traceback_later()
+        """)
+        script_helper.assert_python_ok(
+            "-X", "gil=0", "-c", script,
+            MIMALLOC_PAGE_FULL_RETAIN=str(full_retain),
+            MIMALLOC_PAGE_RECLAIM_ON_FREE="0",
+        )
+
     def test_collect_cycles_after_thread_exit(self):
         class Slotted:
             __slots__ = ("cycle", "__weakref__")

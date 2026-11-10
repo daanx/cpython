@@ -2836,6 +2836,13 @@ get_py_thread_id(PyObject *self, PyObject *Py_UNUSED(ignored))
     return PyLong_FromUnsignedLongLong(tid);
 }
 
+static PyObject *
+get_object_thread_id(PyObject *self, PyObject *obj)
+{
+    uintptr_t tid = _Py_atomic_load_uintptr_relaxed(&obj->ob_tid);
+    return PyLong_FromUnsignedLongLong(tid);
+}
+
 static PyCodeObject *
 get_code(PyObject *obj)
 {
@@ -3437,6 +3444,7 @@ static PyMethodDef module_functions[] = {
 
 #ifdef Py_GIL_DISABLED
     {"py_thread_id", get_py_thread_id, METH_NOARGS},
+    {"object_thread_id", get_object_thread_id, METH_O},
     {"get_tlbc", get_tlbc, METH_O, NULL},
     {"get_tlbc_id", get_tlbc_id, METH_O, NULL},
     {"get_long_lived_total", get_long_lived_total, METH_NOARGS},
