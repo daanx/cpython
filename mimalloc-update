@@ -1,0 +1,100 @@
+#!/bin/sh
+set -eu
+
+usage() {
+    cat <<'EOF'
+Usage: mimalloc-update [--dry-run] [BRANCH | --local DIR]
+
+Fetch microsoft/mimalloc from GitHub (default branch: dev3), or use the
+contents of a local checkout, including uncommitted changes.
+
+Mirror src/, include/, and LICENSE into Objects/mimalloc/ and
+Include/internal/mimalloc/. Obsolete files are removed and local edits
+in those directories are overwritten. No other CPython files are changed.
+
+  --dry-run    Show changes without modifying CPython.
+  --local DIR  Read a local checkout instead of fetching from GitHub.
+  -h, --help   Show this help.
+
+Requires git (unless --local is used) and rsync.
+EOF
+}
+
+die() {
+    echo "mimalloc-update: $*" >&2
+    exit 1
+}
+
+branch=
+source=
+dry_run=false
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        --dry-run) dry_run=true ;;
+        --local)
+            [ "$#" -ge 2 ] && [ -n "$2" ] || die "--local requires a directory"
+            [ -z "$source$branch" ] || die "choose either a branch or --local DIR"
+            source=$2
+            shift
+            ;;
+        -*) die "unknown option: $1 (use --help)" ;;
+        *)
+            [ -n "$1" ] && [ -z "$source$branch" ] ||
+                die "choose either a branch or --local DIR"
+            branch=$1
+            ;;
+    esac
+    shift
+done
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+[ -f "$root/Include/Python.h" ] || die "run the script from a CPython checkout"
+for path in Objects Objects/mimalloc Include Include/internal Include/internal/mimalloc; do
+    [ -d "$root/$path" ] && [ ! -L "$root/$path" ] ||
+        die "expected a non-symlink directory: $root/$path"
+done
+command -v rsync >/dev/null 2>&1 || die "rsync is required"
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/mimalloc-update.XXXXXXXX")
+trap 'rm -rf -- "$work"' 0
+trap 'die "interrupted"' HUP INT TERM
+
+if [ -z "$source" ]; then
+    branch=${branch:-dev3}
+    command -v git >/dev/null 2>&1 || die "git is required"
+    echo "Fetching mimalloc branch/tag: $branch"
+    git clone --quiet --depth 1 --single-branch --branch "$branch" -- \
+        https://github.com/microsoft/mimalloc.git "$work/upstream"
+    source=$work/upstream
+    revision=$(git -C "$source" rev-parse HEAD)
+    echo "Mimalloc revision: $revision"
+else
+    source=$(CDPATH= cd -- "$source" && pwd -P)
+    echo "Using local mimalloc: $source"
+fi
+
+for path in src/static.c include/mimalloc.h include/mimalloc/types.h LICENSE; do
+    [ -f "$source/$path" ] || die "missing mimalloc file: $source/$path"
+done
+
+# Stage both trees before changing either destination; LICENSE belongs with src.
+rsync -rl -- "$source/src/" "$work/src/"
+rsync -rl -- "$source/include/" "$work/include/"
+cp -- "$source/LICENSE" "$work/src/LICENSE"
+
+# Compare contents, not checkout timestamps, to avoid unnecessary rebuilds.
+set -- -rlcv --delete
+if [ "$dry_run" = true ]; then
+    set -- "$@" --dry-run
+fi
+echo "Objects/mimalloc/:"
+rsync "$@" -- "$work/src/" "$root/Objects/mimalloc/"
+echo "Include/internal/mimalloc/:"
+rsync "$@" -- "$work/include/" "$root/Include/internal/mimalloc/"
+
+if [ "$dry_run" = true ]; then
+    echo "Dry run complete; no CPython files changed."
+else
+    echo "Updated vendored mimalloc sources, headers, and license."
+fi

@@ -10,6 +10,9 @@
 #include "pycore_interp.h"        // PyInterpreterState.gc
 #include "pycore_interpframe.h"   // _PyFrame_GetLocalsArray()
 #include "pycore_list.h"          // _PyList_GetItemRef()
+#ifdef Py_GIL_DISABLED
+#  include "pycore_mimalloc.h"    // mi_heap_visit_blocks()
+#endif
 #include "pycore_object_alloc.h"  // _PyObject_MallocWithType()
 #include "pycore_pystate.h"       // _PyThreadState_GET()
 #include "pycore_tstate.h"        // _PyThreadStateImpl
@@ -444,6 +447,7 @@ gc_visit_thread_stacks(PyInterpreterState *interp, struct collection_state *stat
                 continue;
             }
 
+            gc_visit_stackref(f->f_funcobj);
             gc_visit_stackref(f->f_executable);
             while (top != f->localsplus) {
                 --top;
@@ -840,6 +844,10 @@ gc_visit_thread_stacks_mark_alive(PyInterpreterState *interp, gc_mark_args_t *ar
             }
 
             _PyStackRef *top = f->stackpointer;
+            if (gc_visit_stackref_mark_alive(args, f->f_funcobj) < 0) {
+                err = -1;
+                goto exit;
+            }
             if (gc_visit_stackref_mark_alive(args, f->f_executable) < 0) {
                 err = -1;
                 goto exit;

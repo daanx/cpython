@@ -93,6 +93,15 @@ _PyMem_RawFree(void *Py_UNUSED(ctx), void *ptr)
 static bool count_blocks(const mi_heap_t *, const mi_heap_area_t *,
                          void *, size_t, void *);
 
+static void
+set_mimalloc_defaults(void)
+{
+    mi_option_set_default(mi_option_purge_delay, 10);
+    mi_option_set_default(mi_option_arena_purge_mult, 1);
+    mi_option_set_default(mi_option_arena_purge_min_size, 64);  // KiB
+    mi_option_set_default(mi_option_page_full_retain, -1);
+}
+
 #ifdef Py_GIL_DISABLED
 static _Py_thread_local struct _qsbr_shared *mimalloc_init_qsbr;
 
@@ -146,13 +155,15 @@ mi_page_qsbr_should_delay(mi_page_qsbr_t *page, mi_heap_qsbr_t *heap,
         page->goal = QSBR_INITIAL;
         return true;
     }
+    struct _qsbr_thread_state *qsbr = NULL;
+    PyThreadState *tstate = _PyThreadState_GET();
+    if (tstate != NULL && &tstate->interp->qsbr == heap->shared &&
+        _Py_atomic_load_int_relaxed(&tstate->state) == _Py_THREAD_ATTACHED)
+    {
+        qsbr = ((_PyThreadStateImpl *)tstate)->qsbr;
+    }
     if (page->goal == 0) {
-        struct _qsbr_thread_state *qsbr = NULL;
-        PyThreadState *tstate = _PyThreadState_GET();
-        if (tstate != NULL && &tstate->interp->qsbr == heap->shared &&
-            _Py_atomic_load_int_relaxed(&tstate->state) == _Py_THREAD_ATTACHED)
-        {
-            qsbr = ((_PyThreadStateImpl *)tstate)->qsbr;
+        if (qsbr != NULL) {
             qsbr->should_process = true;
         }
         if (qsbr == NULL || should_advance_qsbr_for_page(qsbr, page_size)) {
@@ -161,8 +172,13 @@ mi_page_qsbr_should_delay(mi_page_qsbr_t *page, mi_heap_qsbr_t *heap,
         else {
             page->goal = _Py_qsbr_shared_next(heap->shared);
         }
+        return true;
     }
-    // Hooks can run under allocator locks, so only consult cached progress.
+    if (qsbr != NULL) {
+        // Polling takes no locks; the thread array is stable while attached.
+        return !_Py_qsbr_poll(qsbr, page->goal);
+    }
+    // Without an attached thread, only consult cached progress.
     uint64_t rd_seq = _Py_atomic_load_uint64(&heap->shared->rd_seq);
     return !QSBR_LEQ(page->goal, rd_seq);
 }
@@ -170,6 +186,11 @@ mi_page_qsbr_should_delay(mi_page_qsbr_t *page, mi_heap_qsbr_t *heap,
 int
 _PyMem_InitMimalloc(PyInterpreterState *interp)
 {
+    // Options are process-wide; avoid changing them during subinterpreter creation.
+    if (_Py_IsMainInterpreter(interp)) {
+        set_mimalloc_defaults();
+    }
+
     size_t base_offset = offsetof(PyObject, ob_type);
     if (_PyMem_DebugEnabled()) {
         base_offset += 2 * sizeof(size_t);
@@ -839,6 +860,8 @@ set_up_allocators_unlocked(PyMemAllocatorName allocator)
     case PYMEM_ALLOCATOR_MIMALLOC:
     case PYMEM_ALLOCATOR_MIMALLOC_DEBUG:
     {
+        set_mimalloc_defaults();
+
         PyMemAllocatorEx malloc_alloc = MIMALLOC_RAWALLOC;
         set_allocator_unlocked(PYMEM_DOMAIN_RAW, &malloc_alloc);
 

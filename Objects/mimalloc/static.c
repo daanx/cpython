@@ -36,6 +36,7 @@ terms of the MIT license. A copy of the license can be found in the file
 #endif
 
 #include "util/libc.c"
+#include "util/memid.c"
 #include "util/options.c"
 #include "util/random.c"
 #include "util/stats.c"
@@ -44,6 +45,8 @@ terms of the MIT license. A copy of the license can be found in the file
 #include "arena/arena.c"
 #include "arena/arena-alloc.c"
 #include "arena/arena-page.c"
+#include "arena/arena-page-alloc.c"
+#include "arena/arena-heap.c"
 #include "arena/bitmap-chunk.c"
 #include "arena/bitmap.c"
 
@@ -55,7 +58,7 @@ terms of the MIT license. A copy of the license can be found in the file
 #include "alloc/page-queue.c"
 
 #include "heap/heap.c"
-#include "heap/init.c"
+#include "heap/process.c"
 #include "heap/page-map.c"
 #include "heap/subproc.c"
 #include "heap/theap.c"
@@ -63,3 +66,5 @@ terms of the MIT license. A copy of the license can be found in the file
 #include "profile/sample-guarded.c"
 #include "profile/sample-profile.c"
 #include "profile/pprof.c"
+#include "profile/pprof-os.c"
+#include "profile/pprof-write.c"

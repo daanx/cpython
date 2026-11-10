@@ -145,24 +145,21 @@ thread state abandons its pages without invalidating live objects; heap
 visitation includes both owned and abandoned pages, so they remain visible to
 the garbage collector.
 
-Full pages can also be abandoned before their allocating thread exits. The
-ordinary last-free path reclaims an empty, QSBR-delayed page into the freeing
-thread's theap for the same heap, where its delayed-page queue tracks release.
-
 CPython supplies four typed hooks: `mi_heap_qsbr_init` associates a heap with its
 interpreter's QSBR state, `mi_page_qsbr_clear` and `mi_page_qsbr_is_clear` manage
 a page's goal, and `mi_page_qsbr_should_delay` establishes a goal if needed and
-checks cached read-sequence progress. These hooks may run without an attached
-Python thread state and while allocator locks are held. They must not poll the
-thread registry. `_PyMem_ProcessDelayed` polls outside those locks, then drains
-each object heap's thread-local delayed-page queue.
+checks read-sequence progress. An attached thread can poll the thread registry:
+polling takes no locks, and the registry cannot be resized while the thread is
+attached. Without an attached thread in the same interpreter, the hook only
+checks cached progress. `_PyMem_ProcessDelayed` also polls, then drains each
+object heap's thread-local delayed-page queue.
 
 Mimalloc owns the delayed-page queues and page transitions. A delayed empty
 page can still supply allocations of its existing size class. If it becomes
 empty again, its previous goal is cleared and a new grace period is required.
 Queues are FIFO; an incomplete goal at the head may delay later pages. During
 stop-the-world collection, CPython also sweeps abandoned pages using the same
-cached QSBR progress.
+QSBR hooks.
 
 The object's reference-count fields and any pre-header remain untouched by
 debug fills, using the heap's `debug_fill_preserve` setting. At interpreter
@@ -179,6 +176,12 @@ cleanup or use the allocator before exec.
 The regular GIL build does not enable QSBR and retains full pages in their
 owning thread, as in mimalloc v2. Its allocation statistics visit only the
 current thread's pages, so early abandonment would make those counts incomplete.
+
+CPython defaults to a 10 ms purge delay, an arena purge multiplier of 1, a
+64 KiB minimum purge size, and retaining full pages in their owning threads.
+Explicit `MIMALLOC_*` environment settings take precedence. These process-wide
+defaults are set during allocator setup or main-interpreter initialization,
+not when creating subinterpreters.
 
 ### Updating Vendored Mimalloc
 

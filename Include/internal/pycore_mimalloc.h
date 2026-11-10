@@ -9,21 +9,19 @@
 #  error "pycore_mimalloc.h must be included before mimalloc.h"
 #endif
 
-typedef enum {
-    _Py_MIMALLOC_HEAP_MEM = 0,      // PyMem_Malloc() and friends
-    _Py_MIMALLOC_HEAP_OBJECT = 1,   // non-GC objects
-    _Py_MIMALLOC_HEAP_GC = 2,       // GC objects without pre-header
-    _Py_MIMALLOC_HEAP_GC_PRE = 3,   // GC objects with pre-header
-    _Py_MIMALLOC_HEAP_COUNT
-} _Py_mimalloc_heap_id;
-
+#include "pycore_mimalloc_structs.h"
 #include "pycore_pymem.h"
 
 #ifdef WITH_MIMALLOC
 #  define MI_NO_PTHREAD_ATFORK 1
+// CPython does not use mimalloc's C++ allocation APIs.
+#  define MI_NO_CXX_NEW_HANDLER 1
+// Benign alignment fallback warnings interfere with stderr-sensitive tests.
+#  define MI_NO_ALIGN_FALLBACK_WARNING 1
+#  define MI_ARENA_PURGE_ON_FREE 1
 #  ifdef Py_GIL_DISABLED
 #    define MI_PRIM_THREAD_ID   _Py_ThreadId
-#    define MI_CPYTHON 1
+#    define MI_QSBR 1
 
 struct mi_page_qsbr_s {
     uint64_t goal;
@@ -39,6 +37,10 @@ struct mi_heap_qsbr_s {
 #  define MI_DEBUG_UNINIT     PYMEM_CLEANBYTE
 #  define MI_DEBUG_FREED      PYMEM_DEADBYTE
 #  define MI_DEBUG_PADDING    PYMEM_FORBIDDENBYTE
+// Avoid transparent huge pages increasing RSS on Linux.
+#  define MI_NO_THP 1
+// The free-threaded GC does not support guarded allocation layouts.
+#  define MI_GUARDED 0
 #ifdef Py_DEBUG
 #  define MI_DEBUG 2
 #else
@@ -47,6 +49,11 @@ struct mi_heap_qsbr_s {
 
 #ifdef _Py_THREAD_SANITIZER
 #  define MI_TSAN 1
+#endif
+
+// Free-threaded builds intentionally read object headers after free.
+#if defined(_Py_ADDRESS_SANITIZER) && !defined(Py_GIL_DISABLED)
+#  define MI_TRACK_ASAN 1
 #endif
 
 #ifdef __cplusplus
@@ -61,21 +68,6 @@ extern "C++" {
 }
 #endif
 
-#endif
-
-#ifdef Py_GIL_DISABLED
-struct _mimalloc_interp_state {
-    mi_heap_t *heaps[_Py_MIMALLOC_HEAP_COUNT];
-};
-
-struct _mimalloc_thread_state {
-    mi_theap_t *current_object_heap;
-    mi_theap_t *heaps[_Py_MIMALLOC_HEAP_COUNT];
-    int initialized;
-};
-
-extern int _PyMem_InitMimalloc(PyInterpreterState *interp);
-extern void _PyMem_FiniMimalloc(PyInterpreterState *interp);
 #endif
 
 #endif // Py_INTERNAL_MIMALLOC_H
